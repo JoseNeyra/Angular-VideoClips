@@ -2,6 +2,8 @@ import { Component } from '@angular/core';
 import { FormControl, FormGroup, Validators } from '@angular/forms';
 import IUser from 'src/app/models/user.model';
 import { AuthService } from 'src/app/services/auth.service';
+import { EmailTaken } from '../validators/email-taken';
+import { RegisterValidators } from '../validators/register-validators';
 
 
 @Component({
@@ -16,6 +18,8 @@ export class RegisterComponent {
   alertColor = 'blue'
   inSubmission = false
 
+  constructor(private authService: AuthService, private emailTaken: EmailTaken){}
+
   name = new FormControl('', [                      // Passing in a default value of an empty string
     Validators.required,                            // Forces this input field to have value
     Validators.minLength(3)                         // Handles strings, this input must be higher than 3 chars
@@ -23,7 +27,7 @@ export class RegisterComponent {
   email = new FormControl('', [
     Validators.required,
     Validators.email
-  ])
+  ], [this.emailTaken.validate])
   age = new FormControl<number | null>(null, [
     Validators.required,
     Validators.min(18),                              // Users under 18 cant register
@@ -42,6 +46,7 @@ export class RegisterComponent {
     Validators.maxLength(13)
   ])
 
+  // The form group takes in the controls of the form as an object and an array of validators to validate the form with.
   registerForm = new FormGroup({
     name : this.name,
     email: this.email,
@@ -49,9 +54,8 @@ export class RegisterComponent {
     password: this.password,
     confirmPassword: this.confirmPassword,
     phoneNumber: this.phoneNumber
-  })
+  }, [RegisterValidators.match('password', 'confirmPassword')])
 
-  constructor(private authService: AuthService){}
 
   async register() {
     this.showAlert = true
