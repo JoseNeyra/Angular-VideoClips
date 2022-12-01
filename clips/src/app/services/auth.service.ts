@@ -2,7 +2,8 @@ import { Injectable } from '@angular/core';
 
 import { AngularFireAuth } from '@angular/fire/compat/auth';
 import { AngularFirestore, AngularFirestoreCollection } from '@angular/fire/compat/firestore';
-import { delay, map, Observable } from 'rxjs';
+import { ActivatedRoute, NavigationEnd, Router } from '@angular/router';
+import { delay, filter, map, Observable, of, switchMap } from 'rxjs';
 
 import IUser from '../models/user.model';
 
@@ -15,15 +16,29 @@ export class AuthService {
   private usersCollection: AngularFirestoreCollection<IUser>
   public isAuthenticated$: Observable <boolean>
   public isAuthenticatedWithDelay$: Observable<boolean>
+  private redirect = false
 
-  constructor(private auth: AngularFireAuth, private db: AngularFirestore) {
+  constructor(private auth: AngularFireAuth, private db: AngularFirestore, 
+              private router: Router, private activeRoute: ActivatedRoute) {
+    
     this.usersCollection = db.collection<IUser>('users')       // Creates or updates a collection named 'users'. The generic helps us specify what object is getting passed to the collection 
+    
     this.isAuthenticated$ = auth.user.pipe(       //isAuthenticated is an observable. The $ is best practice to help other devs identfy observables in the code
       map(user => !!user)     //The map operator will help us cast the user object to a boolean, returns true if user is not null
     )
+    
     this.isAuthenticatedWithDelay$ = this.isAuthenticated$.pipe(
       delay(1000)
     )
+
+    // Checking if the page the user is on requires authentication
+    this.router.events.pipe(          
+      filter( event => event instanceof NavigationEnd), //The events observable will emit all events that happened in the router, we can filter these events by class using the filter pipe. We are looking for the Navigation End event only.
+      map( event => this.activeRoute.firstChild),        // Now we can take the Navigation End event and get the first activeRoute (current active Route)
+      switchMap(activeRoute => activeRoute?.data ?? of({})) // Now we can subscribe to the active route observable and subscribe to it. NOTE the ?? is a new feature of JS, if the first part of our expression (activeRoute?.data) return null or undefined, the new return will be the second part of our expression (of({})) which returns an empty object, this will prevent a null pointer exception
+    ).subscribe(data => {
+      this.redirect = data['authOnly'] ?? false     // Sets the redirect attribute to true if the authOnly parameter is set to true, or false if it hasn't been set. Remember: this property has been set in the video-routing module
+    })
   }
 
   public async createUser(userData: IUser) {
@@ -54,5 +69,13 @@ export class AuthService {
     await userCredentials.user.updateProfile({  
       displayName: userData.name
     })
+  }
+
+  public async logout() {
+    await this.auth.signOut()    // Asynchronous method to remove Firebase auth token from application
+
+    if (this.redirect) {
+      await this.router.navigateByUrl('/')    // Redirect the user to the home page after logging out
+    }
   }
 }

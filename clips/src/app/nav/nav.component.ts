@@ -1,5 +1,6 @@
 import { Component, OnInit } from '@angular/core';
 import { AngularFireAuth } from '@angular/fire/compat/auth';
+import { Router } from '@angular/router';
 import { AuthService } from '../services/auth.service';
 import { ModalService } from '../services/modal.service';
 
@@ -12,7 +13,7 @@ export class NavComponent implements OnInit {
 
   // isAuthenticated = false
 
-  constructor(public modal: ModalService, public auth: AuthService, private angularFireAuth: AngularFireAuth) { 
+  constructor(public modal: ModalService, public auth: AuthService) { 
     // Subscribe to the observable from the AuthService that tells us if the user has been authenticated
     // auth.isAuthenticated$.subscribe(status => {    // No longer needed because we are using the async pipe in the template to subscribe to the observable there
     //   this.isAuthenticated = status
@@ -28,10 +29,9 @@ export class NavComponent implements OnInit {
     this.modal.toggleModal('auth')
   }
 
-  async logout($event: Event) {
+  logout($event: Event) {
     $event.preventDefault()
 
-    await this.angularFireAuth.signOut()    // Asynchronous method
+    this.auth.logout()
   }
-
 }
