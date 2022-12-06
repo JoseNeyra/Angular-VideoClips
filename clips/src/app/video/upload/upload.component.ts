@@ -2,12 +2,13 @@ import { Component, OnDestroy, OnInit } from '@angular/core';
 import { AngularFireAuth } from '@angular/fire/compat/auth';
 import { AngularFireStorage, AngularFireUploadTask } from '@angular/fire/compat/storage';
 import { FormControl, FormGroup, Validators } from '@angular/forms';
-import { last, switchMap } from 'rxjs';
+import { combineLatest, forkJoin, switchMap } from 'rxjs';
 import { v4 as uuid } from 'uuid'       // Getting the uuid package v4 as uuid
 import firebase from 'firebase/compat/app'
 import IClip from 'src/app/models/clip.model';
 import { ClipService } from 'src/app/services/clip.service';
 import { Router } from '@angular/router'
+import { FfmpegService } from 'src/app/services/ffmpeg.service';
 
 @Component({
   selector: 'app-upload',
@@ -28,18 +29,26 @@ export class UploadComponent implements OnDestroy {
   showPercentage: boolean = false
   user: firebase.User | null = null
   task?: AngularFireUploadTask
+  screenshots: string[] = []
+  selectedScreenshot = ''
+  screenshotTask?: AngularFireUploadTask
 
 
   constructor(private storage: AngularFireStorage, private auth: AngularFireAuth, private clipsService: ClipService, 
-    private router: Router) {
-    this.isFileSubmitted = false
-    auth.user.subscribe(user => {
+    private router: Router, public ffmpegService: FfmpegService) {
+      this.ffmpegService.init()     // Initialize ffmpeg as soon as possible. 
+      this.isFileSubmitted = false
+      auth.user.subscribe(user => {
       this.user = user      // Holds the current logged-in user information, this will never be null because of our route guards
-    })
+      })
+    
   }
+
+
   ngOnDestroy(): void {
     this.task?.cancel()     // This will end the upload process if the user navigates out of the upload page
   }
+
 
   title: FormControl = new FormControl('', {
     validators: [
@@ -53,7 +62,11 @@ export class UploadComponent implements OnDestroy {
     title: this.title
   })
 
-  storeFile(event: Event) {
+
+  async storeFile(event: Event) {
+    if(this.ffmpegService.isRunning) {
+      return
+    }
     this.isDragover = false
 
     // Here we're getting the file that was droped by the user from the event object
@@ -68,6 +81,9 @@ export class UploadComponent implements OnDestroy {
       return
     }
 
+    this.screenshots = await this.ffmpegService.getScreenshots(this.file)      // Get the screenshots from the ffmpeg service
+    this.selectedScreenshot = this.screenshots[0]
+
     // This will replace the title formControl value to the name of the file the user uploaded
     this.title.setValue(                          
       this.file.name.replace(/\.[^/.]+$/, '')     // The replace method with this regex removes the file extension from the file name.
@@ -75,7 +91,8 @@ export class UploadComponent implements OnDestroy {
     this.isFileSubmitted = true
   }
 
-  uploadFile() {
+
+  async uploadFile() {
     this.uploadForm.disable()   // Disable the form so that user can't modify the form as it's beeing submitting
     this.showAlert = true
     this.alertColor = 'blue'
@@ -89,27 +106,54 @@ export class UploadComponent implements OnDestroy {
     const clipFileName = uuid()                   // This function returns a random uuid
     const clipPath = `clips/${clipFileName}.mp4`  // We're changing the first approach because the user may upload files with the same name which will overwrite previous files, by using an uuid we make sure users wont overwrite earlier files
 
+    const screenshotBlob = await this.ffmpegService.blobFromURL(
+      this.selectedScreenshot
+    )
+    const screenshotPath = `screenshots/${clipFileName}.png`
+
     this. task = this.storage.upload(clipPath, this.file)    // This is a Firebase function that allow us to upload a file. It takes the file name 'clipPath' and the file
 
     const clipReference = this.storage.ref(clipPath);   // This holds the Firestore reference to the file we're uploading. This wont be finalized until the upload is complete. We need to subscribe to an inner observable in the task observable to get the finalized value 
 
-    this.task.percentageChanges().subscribe(progress => {      // This allows us to get the upload progress as a percentage from Firebase
-      this.percentage = progress as number / 100
+    this.screenshotTask = this.storage.upload(screenshotPath, screenshotBlob)   // Uploading the screenshot
+
+    const screenshotRef = this.storage.ref(screenshotPath)
+
+    combineLatest([               // Observable that allow us to combine the 2 progress observables for the screenshot and the video uploads
+      this.task.percentageChanges(),
+      this.screenshotTask.percentageChanges()
+    ]).subscribe( (progress) => {      // This allows us to get the upload progress as a percentage from Firebase
+      const [clipProgress, screenshotProgress] = progress
+      if (!clipProgress || ! screenshotProgress) {
+        return
+      }
+
+      const total = clipProgress + screenshotProgress
+      this.percentage = total as number / 200
     })
 
     // Here is another subscription to the task observable, this will only be triggered when the upload has completed. 
-    this.task.snapshotChanges().pipe(      
-      last(),
-      switchMap(() => clipReference.getDownloadURL())   // Allows us to subscribe to the last observable to retrieve the finalized clip reference
+   forkJoin([
+    this.task.snapshotChanges(),
+    this.screenshotTask.snapshotChanges()
+  ]).pipe(      
+      switchMap(() => forkJoin([
+        clipReference.getDownloadURL(),
+        screenshotRef.getDownloadURL()
+      ]))   // Allows us to subscribe to the last observable to retrieve the finalized clip reference
     ).subscribe({
-      next: async(url) => {
+      next: async(urls) => {
+
+        const [clipURL, screenshotURL] = urls
         const clip: IClip = {             // The clip object will allow us to map the user to their video uploads in the Firestore
           uid: this.user?.uid as string,
           displayName: this.user?.displayName as string,
           title: this.title.value,
           fileName: `${clipFileName}.mp4`,
-          url,           // Adding the url property from the getDownloadURL() to the object. This is using es6 syntax for(url: url)
-          timestamp: firebase.firestore.FieldValue.serverTimestamp()        // Returns a timestamp from the server timestamp, this will allow us to sort the videos by upload time
+          url: clipURL,           // Adding the url property from the getDownloadURL() to the object. This is using es6 syntax for(url: url)
+          screenshotURL,
+          timestamp: firebase.firestore.FieldValue.serverTimestamp(),       // Returns a timestamp from the server timestamp, this will allow us to sort the videos by upload time
+          screenshotFileName: `${clipFileName}.png`
         }
 
         const clipDocumentReference = await this.clipsService.createClip(clip)
